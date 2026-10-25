@@ -1,0 +1,20 @@
+{
+  "checkpoint_sha256": "6999b363f907cf724671789e254e820f3609dc225cec34be59861a07cd1b55ab",
+  "manifest_sha256": "a846d5f632da40f674de1dd082a431f974b2a2528520cd0ee149d9f74838afbf",
+  "split_mode": "episode",
+  "episode_counts": {
+    "train": 4372,
+    "val": 546,
+    "test": 546
+  },
+  "expected_test_samples": 5602300,
+  "episode_disjoint": true,
+  "unseen_objects_required": false,
+  "batch_size": 384,
+  "batch_per_gpu": 192,
+  "precision": "FP32",
+  "tf32": false,
+  "created_utc": "2026-10-24T15:22:29.431986+00:00",
+  "checkpoint_name": "step_00040000.pt",
+  "dataset": "zekaiwang/trex_dataset"
+}

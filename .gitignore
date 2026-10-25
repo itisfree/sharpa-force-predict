@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.env
+.DS_Store
+runs/
+artifacts/
+datasets/
+*.pt
+*.pth
+*.tar.gz
+*.predictions.csv
