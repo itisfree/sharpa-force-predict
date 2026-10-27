@@ -6,6 +6,8 @@ A PyTorch ResNet-50 baseline trained jointly on all ten fingers of the [T-Rex da
 
 [中文说明](README.zh-CN.md) · [Full evaluation](results/step48000/REPORT.md) · [Per-finger metrics](results/step48000/metrics_by_finger.csv)
 
+**Technical blog (中文): [只看一张触觉图像，能估计多大的力？](docs/blog/2026-10-27-tactile-image-to-force.md)**
+
 ## Prediction versus ground truth
 
 Temporal force predictions from held-out test episodes, evaluated at **step 48,000 (replayed from step 45,000)**. Blue: ground truth. Orange: model prediction. Curves show complete sequences at 30 Hz without smoothing.
