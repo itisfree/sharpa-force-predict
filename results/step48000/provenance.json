@@ -1,0 +1,25 @@
+{
+  "checkpoint_sha256": "22e11e914be5c9a98615afc297510efc758d62cdc51eea5732edd22c7e22d856",
+  "global_step": 48000,
+  "checkpoint_origin": "Replayed from step 45000 to step 48000 on one GPU; not bitwise identical to original discarded run",
+  "manifest_sha256": "a846d5f632da40f674de1dd082a431f974b2a2528520cd0ee149d9f74838afbf",
+  "split_mode": "episode",
+  "episode_counts": {
+    "train": 4372,
+    "val": 546,
+    "test": 546
+  },
+  "expected_test_samples": 5602300,
+  "episode_disjoint": true,
+  "unseen_objects_required": false,
+  "batch_size": 512,
+  "precision": "FP32",
+  "tf32": false,
+  "created_utc": "2026-10-27T05:10:52.326984+00:00",
+  "checkpoint_name": "step_00048000.pt",
+  "dataset": "zekaiwang/trex_dataset",
+  "fresh_inference": true,
+  "sample_keys_and_ground_truth_verified": true,
+  "trajectory_count": 5460,
+  "archive_sha256": "83ddf053443460c16a660d1400dfeff6df7095758e54fe06927d434cd570f75d"
+}

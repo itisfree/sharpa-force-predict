@@ -37,6 +37,8 @@ def main():
     p.add_argument('--resume', default=None, help='Resume a trusted checkpoint; step checkpoints restore the next unconsumed batch')
     p.add_argument('--allow-batch-size-change', action='store_true', help='Explicitly permit a new batch size on resume; preserve model and optimizer state')
     p.add_argument('--data-parallel', action='store_true', help='Split the global batch across all visible CUDA devices')
+    p.add_argument('--stop-at-step', type=int, default=0, help='Save a full cursor checkpoint at this global step, then exit without further training')
+    p.add_argument('--micro-batch-size', type=int, default=0, help='Single-GPU weighted gradient accumulation; loader batch and cursor stay unchanged')
     p.add_argument('--amp', action='store_true')
     p.add_argument('--amp-dtype', choices=['float16', 'bfloat16'], default='float16')
     p.set_defaults(func=train)
@@ -64,11 +66,15 @@ def main():
         parser.error('batch-size/cpu-threads must be positive; workers must be nonnegative')
     if hasattr(args,'log_every') and args.log_every < 1:
         parser.error('log-every must be positive')
-    for key in ('steps_per_epoch','eval_batches','max_batches','streams_per_finger','checkpoint_every'):
+    for key in ('steps_per_epoch','eval_batches','max_batches','streams_per_finger','checkpoint_every','stop_at_step'):
         if hasattr(args,key) and getattr(args,key) < 0:
             parser.error(f'{key} must be nonnegative')
     if hasattr(args,'epochs') and args.epochs < 1:
         parser.error('epochs must be positive')
+    if getattr(args, 'micro_batch_size', 0) < 0:
+        parser.error('micro-batch-size must be nonnegative')
+    if getattr(args, 'micro_batch_size', 0) and getattr(args, 'data_parallel', False):
+        parser.error('micro batches require single-GPU execution')
     args.func(args)
 
 

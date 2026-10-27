@@ -1,4 +1,6 @@
 import csv
+from contextlib import nullcontext
+from copy import copy
 import hashlib
 import json
 import os
@@ -15,7 +17,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from .cursor_data import CursorFrameDataset
 
 from .data import FrameDataset, digest
-from .model import ForceRegressor
+from .model import ForceRegressor, isolated_bn_recompute
 
 
 class Metrics:
@@ -110,6 +112,25 @@ def evaluate_model(model, loader, mean, std, near_zero, high_force, max_batches=
     return result
 
 
+def accumulated_backward(model, image, target, mean, std, criterion, scaler, device, amp_dtype, micro_batch_size):
+    """Match DataParallel chunks; only the first chunk persists BN buffers."""
+    size = micro_batch_size or len(target)
+    predictions, losses = [], []
+    for begin in range(0, len(target), size):
+        end = min(begin + size, len(target))
+        context = isolated_bn_recompute([model]) if begin else nullcontext()
+        with context:
+            with torch.autocast(device_type=device.type, enabled=amp_dtype is not None, dtype=amp_dtype):
+                prediction = model(image[begin:end])
+                loss = criterion(prediction, (target[begin:end]-mean)/std) * ((end-begin)/len(target))
+            if not torch.isfinite(loss):
+                raise FloatingPointError('Nonfinite training loss')
+            scaler.scale(loss).backward()
+            predictions.append(prediction.detach())
+            losses.append(loss.detach())
+    return torch.cat(predictions), torch.stack(losses).sum()
+
+
 def atomic_checkpoint(path, checkpoint):
     temp = path.with_suffix('.tmp')
     torch.save(checkpoint, temp)
@@ -192,9 +213,11 @@ def train(args):
                               'note': 'Continue with the next unconsumed batch; no trained batches are replayed.'}), flush=True)
         torch.set_rng_state(cp['torch_rng']); np.random.set_state(cp['numpy_rng']); random.setstate(cp['python_rng'])
         if device.type == 'cuda' and cp['cuda_rng'] is not None:
-            torch.cuda.set_rng_state_all(cp['cuda_rng'])
+            torch.cuda.set_rng_state_all(cp['cuda_rng'][:torch.cuda.device_count()])
     if args.epochs <= start:
         raise ValueError(f'epochs must exceed the completed epoch count {start}')
+    if getattr(args, 'stop_at_step', 0) and global_step >= args.stop_at_step:
+        raise ValueError('Stop target must be later than the resume checkpoint')
     base_model = model
     if getattr(args, 'data_parallel', False):
         if device.type != 'cuda' or device.index not in (None, 0) or torch.cuda.device_count() < 2:
@@ -207,7 +230,9 @@ def train(args):
     trainset = CursorFrameDataset(manifest, 'train', args.seed, args.shuffle_buffer, args.near_zero_keep, args.near_zero_threshold,
                             getattr(args, 'streams_per_finger', 0))
     valset = FrameDataset(manifest, 'val')
-    trainloader, valloader = make_loader(trainset, args, device), make_loader(valset, args, device)
+    eval_args = copy(args)
+    eval_args.batch_size = getattr(args, 'micro_batch_size', 0) or args.batch_size
+    trainloader, valloader = make_loader(trainset, args, device), make_loader(valset, eval_args, device)
     criterion = torch.nn.SmoothL1Loss()
     print(json.dumps({'device': str(device), 'parameters': sum(p.numel() for p in model.parameters()),
                       'backbone': getattr(args, 'backbone', 'resnet18'),
@@ -218,7 +243,7 @@ def train(args):
                       'activation_checkpointing': getattr(args, 'activation_checkpointing', False),
                       'manifest': str(manifest), 'resume_epoch': start, 'input': 'single raw grayscale frame only',
                       'data_parallel_devices': model.device_ids if isinstance(model, torch.nn.DataParallel) else [],
-                      'global_batch_size': args.batch_size}), flush=True)
+                      'global_batch_size': args.batch_size, 'micro_batch_size': getattr(args, 'micro_batch_size', 0)}), flush=True)
     for epoch in range(start, args.epochs):
         trainset.epoch = epoch; model.train()
         loss_sum, n, batches = 0., 0, 0
@@ -237,7 +262,7 @@ def train(args):
             torch.set_rng_state(resume_progress['torch_rng'])
             np.random.set_state(resume_progress['numpy_rng']); random.setstate(resume_progress['python_rng'])
             if device.type == 'cuda' and resume_progress['cuda_rng'] is not None:
-                torch.cuda.set_rng_state_all(resume_progress['cuda_rng'])
+                torch.cuda.set_rng_state_all(resume_progress['cuda_rng'][:torch.cuda.device_count()])
             resume_progress = None
         while not args.steps_per_epoch or batches < args.steps_per_epoch:
             try:
@@ -246,12 +271,8 @@ def train(args):
                 break
             image, y = batch['image'].to(device), batch['target'].to(device)
             optimizer.zero_grad(set_to_none=True)
-            with torch.autocast(device_type=device.type, enabled=amp_dtype is not None, dtype=amp_dtype):
-                prediction = model(image)
-                loss = criterion(prediction, (y-mean)/std)
-            if not torch.isfinite(loss):
-                raise FloatingPointError('Nonfinite training loss')
-            scaler.scale(loss).backward()
+            prediction, loss = accumulated_backward(model, image, y, mean, std, criterion,
+                scaler, device, amp_dtype, getattr(args, 'micro_batch_size', 0))
             scaler.unscale_(optimizer)
             grad = torch.nn.utils.clip_grad_norm_(model.parameters(), 5., error_if_nonfinite=True)
             scaler.step(optimizer); scaler.update()
@@ -280,7 +301,8 @@ def train(args):
                     f.write(line+'\n')
                 print(line, flush=True)
             interval = getattr(args, 'checkpoint_every', 0)
-            if interval and global_step % interval == 0:
+            reached_target = bool(getattr(args, 'stop_at_step', 0) and global_step >= args.stop_at_step)
+            if reached_target or (interval and global_step % interval == 0):
                 checkpoint = {'model': base_model.state_dict(), 'optimizer': optimizer.state_dict(),
                               'scaler': scaler.state_dict(), 'next_epoch': epoch,
                               'epoch_incomplete': True, 'epoch_batch': batches, 'epoch_samples': n,
@@ -297,6 +319,11 @@ def train(args):
                 checkpoint_alias(step_path, run/'last_step.pt')
                 print(json.dumps({'checkpoint_saved': str(step_path), 'global_step': global_step,
                                   'epoch': epoch+1, 'validation_performed': False}), flush=True)
+            if reached_target:
+                (run/'TARGET_STEP_COMPLETE.json').write_text(json.dumps({
+                    'status': 'target step reached and checkpoint saved', 'global_step': global_step,
+                    'checkpoint': str(step_path), 'training_plan_complete': False}, indent=2))
+                return
             if args.steps_per_epoch and batches >= args.steps_per_epoch:
                 break
         if n == 0:
